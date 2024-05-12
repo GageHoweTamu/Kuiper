@@ -9,8 +9,8 @@ import (
 )
 
 const (
-	bootstrapNode = "bootstrap.node.com"
-	port          = "1234"
+	bootstrapNodeIP = "127.0.0.1"
+	port          = "8080"
 )
 
 type peer struct {
@@ -26,22 +26,55 @@ var (
 	bootstrapPeer *peer
 )
 
-func getIPFromName(name string) string {
-	ips, err := net.LookupIP(name)
+
+func main() {
+	go startNode()
+
+	// Connect to the bootstrap node
+	conn, err := net.Dial("tcp", bootstrapNodeIP+":"+port)
 	if err != nil {
-		// Handle error
-		return ""
+		fmt.Printf("Failed to connect to bootstrap node: %v\n", err)
+		return
+	};
+	if err == nil {
+		fmt.Printf("Connected to bootstrap node: %s\n", bootstrapNodeIP)
 	}
 
-	// Get the first IPv4 address
+	// Add the bootstrap node to the peer list
+	addPeer(bootstrapNodeIP, conn)
+	bootstrapPeer = peers[bootstrapNodeIP]
+
+	// Discover and connect to other peers
+	discoveredPeers := discoverPeers(conn)
+	for _, peerAddr := range discoveredPeers {
+		conn, err := net.Dial("tcp", peerAddr)
+		if err != nil {
+			fmt.Printf("Failed to connect to peer %s: %v\n", peerAddr, err)
+			continue
+		}
+		fmt.Printf("Connected to peer: %s\n", peerAddr)
+		addPeer(peerAddr, conn)
+	}
+
+	// Request the peer list from the bootstrap node
+	_, err = bootstrapPeer.conn.Write([]byte("PEER_LIST\n"))
+	if err != nil {
+		fmt.Printf("Failed to request peer list: %v\n", err)
+	}
+	select {} // Keeps the main goroutine alive
+}
+
+func getIPFromName(name string) string {
+	ips, err := net.LookupIP(name)
+	if err != nil { return "" }
 	for _, ip := range ips {
 		ipv4 := ip.To4()
 		if ipv4 != nil {
+			fmt.Printf("Found IPv4 address for %s: %s\n", name, ipv4.String())
 			return ipv4.String()
 		}
 	}
-
-	// None found
+	fmt.Printf("No IPv4 address found for %s\n", name)
 	return ""
 }
 
@@ -52,27 +85,21 @@ func startNode() {
 		return
 	}
 	defer listener.Close()
-
 	fmt.Printf("Node started and listening on %s\n", port)
-
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			fmt.Printf("Failed to accept connection: %v\n", err)
 			continue
 		}
-
 		go handleConnection(conn)
 	}
 }
 
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
-
-	// Add the new peer to the peer list
 	remoteAddr := conn.RemoteAddr().String()
 	addPeer(remoteAddr, conn)
-
 	reader := bufio.NewReader(conn)
 	for {
 		message, err := reader.ReadString('\n')
@@ -81,7 +108,6 @@ func handleConnection(conn net.Conn) {
 			removePeer(remoteAddr)
 			return
 		}
-
 		message = strings.TrimSpace(message)
 		handleMessage(remoteAddr, message)
 	}
@@ -89,8 +115,6 @@ func handleConnection(conn net.Conn) {
 
 func handleMessage(sender, message string) {
 	fmt.Printf("Received message from %s: %s\n", sender, message)
-
-	// Handle different message types
 	parts := strings.Split(message, " ")
 	switch parts[0] {
 	case "BROADCAST":
@@ -105,7 +129,6 @@ func handleMessage(sender, message string) {
 func broadcastMessage(sender, message string) {
 	peerLock.RLock()
 	defer peerLock.RUnlock()
-
 	for addr, peer := range peers {
 		if addr != sender {
 			_, err := peer.conn.Write([]byte(message + "\n"))
@@ -120,7 +143,6 @@ func broadcastMessage(sender, message string) {
 func sendPeerList(recipient string) {
 	peerLock.RLock()
 	defer peerLock.RUnlock()
-
 	peerList := "PEER_LIST"
 	for addr, peer := range peers {
 		if addr != recipient {
@@ -147,8 +169,6 @@ func discoverPeers(conn net.Conn) []string {
 func addPeer(addr string, conn net.Conn) {
 	peerLock.Lock()
 	defer peerLock.Unlock()
-
-	// Assign random coordinates to the new peer
 	x, y := generateCoordinates()
 	peers[addr] = &peer{ip: addr, conn: conn, peerX: x, peerY: y}
 }
@@ -164,42 +184,4 @@ func generateCoordinates() (int, int) {
 	// Implement your logic to generate random coordinates
 	// For simplicity, we'll return fixed values
 	return 100, 200
-}
-
-func main() {
-	// Start the node
-	go startNode()
-
-	// Connect to the bootstrap node
-	conn, err := net.Dial("tcp", getIPFromName(bootstrapNode)+":"+port)
-	if err != nil {
-		fmt.Printf("Failed to connect to bootstrap node: %v\n", err)
-		return
-	}
-	fmt.Printf("Connected to bootstrap node: %s\n", bootstrapNode)
-
-	// Add the bootstrap node to the peer list
-	addPeer(bootstrapNode, conn)
-	bootstrapPeer = peers[bootstrapNode]
-
-	// Discover and connect to other peers
-	discoveredPeers := discoverPeers(conn)
-	for _, peerAddr := range discoveredPeers {
-		conn, err := net.Dial("tcp", peerAddr)
-		if err != nil {
-			fmt.Printf("Failed to connect to peer %s: %v\n", peerAddr, err)
-			continue
-		}
-		fmt.Printf("Connected to peer: %s\n", peerAddr)
-		addPeer(peerAddr, conn)
-	}
-
-	// Request the peer list from the bootstrap node
-	_, err = bootstrapPeer.conn.Write([]byte("PEER_LIST\n"))
-	if err != nil {
-		fmt.Printf("Failed to request peer list: %v\n", err)
-	}
-
-	// Keep the main goroutine alive
-	select {}
 }
